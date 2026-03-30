@@ -3,6 +3,9 @@ import sqlite3
 import yt_dlp
 import os
 import datetime
+import threading
+import time
+import csv
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 TOKEN = "8700931998:AAFsy6rKz8Kw4BTtKUWAokHog_3mRMhNPU8"
@@ -10,71 +13,207 @@ ADMIN_ID = 7588189557
 
 bot = telebot.TeleBot(TOKEN)
 
-db = sqlite3.connect("kino.db",check_same_thread=False)
+db = sqlite3.connect("kino.db", check_same_thread=False)
 cursor = db.cursor()
 
-# TABLES
+# ===== TABLES =====
 cursor.execute("CREATE TABLE IF NOT EXISTS users(user_id INTEGER)")
 cursor.execute("CREATE TABLE IF NOT EXISTS groups(chat_id INTEGER)")
 cursor.execute("CREATE TABLE IF NOT EXISTS kinolar(kod TEXT,name TEXT,file_id TEXT,views INTEGER)")
-cursor.execute("CREATE TABLE IF NOT EXISTS logs(user_id INTEGER, date TEXT)")
-cursor.execute("CREATE TABLE IF NOT EXISTS start_time(time TEXT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS logs(user_id INTEGER,date TEXT)")
 db.commit()
 
-# uptime start
-cursor.execute("SELECT time FROM start_time")
-t = cursor.fetchone()
-if not t:
-    now = str(datetime.datetime.now())
-    cursor.execute("INSERT INTO start_time VALUES(?)",(now,))
-    db.commit()
+# ===== GLOBAL =====
+AUTO_TEXT = ""
+AUTO_VIDEO = None
+AUTO_BUTTON = None
+AUTO_STATUS = False
+AUTO_TIMES = []
 
-# USER ADD
+# ===== USER =====
 def add_user(user_id):
-    cursor.execute("SELECT user_id FROM users WHERE user_id=?",(user_id,))
-    if cursor.fetchone() is None:
-        cursor.execute("INSERT INTO users VALUES(?)",(user_id,))
+    cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO users VALUES(?)", (user_id,))
         db.commit()
 
-# GROUP ADD
-def add_group(chat_id):
-    cursor.execute("SELECT chat_id FROM groups WHERE chat_id=?",(chat_id,))
-    if cursor.fetchone() is None:
-        cursor.execute("INSERT INTO groups VALUES(?)",(chat_id,))
+# ===== GROUP SAVE =====
+@bot.message_handler(func=lambda m: m.chat.type in ["group","supergroup"])
+def save_group(message):
+    cursor.execute("SELECT chat_id FROM groups WHERE chat_id=?", (message.chat.id,))
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO groups VALUES(?)", (message.chat.id,))
         db.commit()
 
-# START
+# ===== JOIN / LEFT CLEANER =====
+@bot.message_handler(content_types=['new_chat_members'])
+def delete_join(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
+
+@bot.message_handler(content_types=['left_chat_member'])
+def delete_left(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
+
+# ===== START =====
 @bot.message_handler(commands=['start'])
 def start(message):
     add_user(message.from_user.id)
-
     today = str(datetime.date.today())
-    cursor.execute("INSERT INTO logs VALUES (?,?)",(message.from_user.id,today))
+    cursor.execute("INSERT INTO logs VALUES (?,?)", (message.from_user.id, today))
     db.commit()
+    bot.send_message(message.chat.id,"🎬 Kino kod yubor yoki link tashla")
 
-    bot.send_message(message.chat.id,"🎬 Kino botga xush kelibsiz\n\nKod yuboring")
-
-# GROUP
-@bot.message_handler(content_types=['new_chat_members'])
-def new_group(message):
-    add_group(message.chat.id)
-
-# ADD MOVIE
-@bot.message_handler(commands=['add'])
-def add_movie(message):
+# ===== ADMIN PANEL =====
+@bot.message_handler(commands=['admin'])
+def admin(message):
     if message.from_user.id != ADMIN_ID:
         return
-    msg = bot.send_message(message.chat.id,"🎬 Video yubor")
-    bot.register_next_step_handler(msg,get_video)
 
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("➕ Kino", callback_data="add"),
+        InlineKeyboardButton("❌ Delete", callback_data="delete")
+    )
+    markup.add(
+        InlineKeyboardButton("📢 Reklama", callback_data="ads"),
+        InlineKeyboardButton("🚀 Auto Ads", callback_data="auto")
+    )
+    markup.add(
+        InlineKeyboardButton("📊 Stat", callback_data="stat"),
+        InlineKeyboardButton("📤 Export", callback_data="export")
+    )
+
+    bot.send_message(message.chat.id,"⚙️ ADMIN PANEL",reply_markup=markup)
+
+# ===== CALLBACK =====
+@bot.callback_query_handler(func=lambda call: True)
+def callback(call):
+    global AUTO_STATUS
+
+    if call.data == "add":
+        msg = bot.send_message(call.message.chat.id,"🎬 Video yubor")
+        bot.register_next_step_handler(msg,get_video)
+
+    elif call.data == "delete":
+        msg = bot.send_message(call.message.chat.id,"Kod yubor")
+        bot.register_next_step_handler(msg,delete_kino)
+
+    elif call.data == "ads":
+        msg = bot.send_message(call.message.chat.id,"Reklama yoz")
+        bot.register_next_step_handler(msg,send_ads)
+
+    elif call.data == "auto":
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("ON", callback_data="on"),
+            InlineKeyboardButton("OFF", callback_data="off")
+        )
+        markup.add(
+            InlineKeyboardButton("Add Time", callback_data="time")
+        )
+        bot.send_message(call.message.chat.id,"⚙️ AUTO REKLAMA",reply_markup=markup)
+
+    elif call.data == "on":
+        AUTO_STATUS = True
+        bot.send_message(call.message.chat.id,"🟢 ON")
+
+    elif call.data == "off":
+        AUTO_STATUS = False
+        bot.send_message(call.message.chat.id,"🔴 OFF")
+
+    elif call.data == "time":
+        msg = bot.send_message(call.message.chat.id,"Masalan 09:00")
+        bot.register_next_step_handler(msg,set_time)
+
+    elif call.data == "stat":
+        show_stats(call.message)
+
+    elif call.data == "export":
+        export_users(call.message)
+
+# ===== ADD TIME =====
+def set_time(message):
+    AUTO_TIMES.append(message.text)
+    bot.send_message(message.chat.id,"✅ Qo‘shildi")
+
+# ===== AUTO ADS =====
+def auto_ads():
+    while True:
+        now = datetime.datetime.now().strftime("%H:%M")
+
+        if AUTO_STATUS and now in AUTO_TIMES:
+            cursor.execute("SELECT user_id FROM users")
+            users = cursor.fetchall()
+
+            for u in users:
+                try:
+                    bot.send_message(u[0], AUTO_TEXT or "Reklama")
+                except:
+                    pass
+
+        time.sleep(30)
+
+threading.Thread(target=auto_ads).start()
+
+# ===== ADS =====
+def send_ads(message):
+    cursor.execute("SELECT user_id FROM users")
+    for u in cursor.fetchall():
+        try:
+            bot.send_message(u[0], message.text)
+        except:
+            pass
+
+    cursor.execute("SELECT chat_id FROM groups")
+    for g in cursor.fetchall():
+        try:
+            bot.send_message(g[0], message.text)
+        except:
+            pass
+
+    bot.send_message(message.chat.id,"✅ Yuborildi")
+
+# ===== EXPORT =====
+def export_users(message):
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+
+    with open("users.csv","w",newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["user_id"])
+        for u in users:
+            writer.writerow([u[0]])
+
+    with open("users.csv","rb") as f:
+        bot.send_document(message.chat.id,f)
+
+    os.remove("users.csv")
+
+# ===== STAT =====
+def show_stats(message):
+    cursor.execute("SELECT COUNT(*) FROM users")
+    users = cursor.fetchone()[0]
+
+    cursor.execute("SELECT SUM(views) FROM kinolar")
+    views = cursor.fetchone()[0] or 0
+
+    bot.send_message(message.chat.id,f"👥 Users: {users}\n👁 Views: {views}")
+
+# ===== ADD MOVIE =====
 def get_video(message):
     file_id = message.video.file_id
-    msg = bot.send_message(message.chat.id,"🎬 Nom yoz")
+    msg = bot.send_message(message.chat.id,"Nom yoz")
     bot.register_next_step_handler(msg,get_name,file_id)
 
 def get_name(message,file_id):
     name = message.text
-    msg = bot.send_message(message.chat.id,"🔎 Kod yoz")
+    msg = bot.send_message(message.chat.id,"Kod yoz")
     bot.register_next_step_handler(msg,save_movie,file_id,name)
 
 def save_movie(message,file_id,name):
@@ -83,92 +222,53 @@ def save_movie(message,file_id,name):
     db.commit()
     bot.send_message(message.chat.id,"✅ Qo‘shildi")
 
-# KINO QIDIRISH
-@bot.message_handler(func=lambda m: True)
+def delete_kino(message):
+    cursor.execute("DELETE FROM kinolar WHERE kod=?", (message.text,))
+    db.commit()
+    bot.send_message(message.chat.id,"❌ O‘chirildi")
+
+# ===== VIDEO DOWNLOAD =====
+@bot.message_handler(func=lambda m: m.text and ("http" in m.text))
+def download_video(message):
+
+    url = message.text
+    bot.send_message(message.chat.id, "📥 Yuklanmoqda...")
+
+    try:
+        ydl_opts = {
+            'format': 'mp4',
+            'outtmpl': '%(title)s.%(ext)s',
+            'quiet': True,
+            'noplaylist': True
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+
+        with open(filename, 'rb') as f:
+            bot.send_video(message.chat.id, f)
+
+        os.remove(filename)
+
+    except:
+        bot.send_message(message.chat.id, "❌ Xatolik")
+
+# ===== KINO =====
+@bot.message_handler(func=lambda m: m.text and not m.text.startswith("/") and "http" not in m.text)
 def kino(message):
-    text = message.text
+    cursor.execute("SELECT name,file_id,views FROM kinolar WHERE kod=?", (message.text,))
+    k = cursor.fetchone()
 
-    cursor.execute("SELECT kod,name,file_id,views FROM kinolar WHERE kod=?",(text,))
-    kino = cursor.fetchone()
-
-    if kino:
-        kod,name,file,views = kino
+    if k:
+        name, file, views = k
         views += 1
-        cursor.execute("UPDATE kinolar SET views=? WHERE kod=?",(views,kod))
+        cursor.execute("UPDATE kinolar SET views=? WHERE kod=?", (views,message.text))
         db.commit()
 
-        caption = f"🎬 {name}\n👁 {views}"
-
-        bot.send_video(message.chat.id,file,caption=caption,protect_content=True)
+        bot.send_video(message.chat.id,file,caption=f"🎬 {name}\n👁 {views}")
     else:
         bot.send_message(message.chat.id,"❌ Topilmadi")
 
-# VIDEO DOWNLOAD
-@bot.message_handler(func=lambda m: m.text and ("youtube" in m.text or "tiktok" in m.text or "instagram" in m.text))
-def download(message):
-    url = message.text
-    bot.send_message(message.chat.id,"📥 Yuklanmoqda...")
-
-    try:
-        ydl_opts = {'outtmpl':'video.mp4','format':'mp4'}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        with open("video.mp4","rb") as v:
-            bot.send_video(message.chat.id,v)
-
-        os.remove("video.mp4")
-    except:
-        bot.send_message(message.chat.id,"❌ Xatolik")
-
-# STATISTIKA
-@bot.message_handler(commands=['stat'])
-def stat(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    today = str(datetime.date.today())
-
-    cursor.execute("SELECT COUNT(*) FROM users")
-    all_users = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(DISTINCT user_id) FROM logs WHERE date=?",(today,))
-    today_users = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(DISTINCT user_id) FROM logs WHERE date >= date('now','-7 day')")
-    week_users = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(DISTINCT user_id) FROM logs WHERE date >= date('now','-30 day')")
-    month_users = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(*) FROM kinolar")
-    movies = cursor.fetchone()[0]
-
-    cursor.execute("SELECT time FROM start_time")
-    start = cursor.fetchone()[0]
-
-    start_time = datetime.datetime.fromisoformat(start)
-    now = datetime.datetime.now()
-
-    diff = now - start_time
-    days = diff.days
-    hours = diff.seconds // 3600
-
-    text = f"""
-📊 Bot statistikasi
-
-👥 Barcha userlar: {all_users}
-🟢 Bugungi faol: {today_users}
-
-📅 7 kun: {week_users}
-📆 30 kun: {month_users}
-
-🎬 Kinolar: {movies}
-
-⏱ Uptime: {days} kun {hours} soat
-"""
-
-    bot.send_message(message.chat.id,text)
-
-print("BOT ISHLADI")
+print("🚀 BOT ISHLADI")
 bot.infinity_polling()
