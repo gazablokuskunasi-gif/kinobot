@@ -35,20 +35,18 @@ def add_user(user_id):
         cursor.execute("INSERT INTO users VALUES(?)", (user_id,))
         db.commit()
 
-# ===== GROUP SAVE (FIXED) =====
+# ===== GROUP CLEANER =====
 @bot.message_handler(content_types=['new_chat_members'])
-def save_group(message):
+def join_clean(message):
     try:
-        cursor.execute("SELECT chat_id FROM groups WHERE chat_id=?", (message.chat.id,))
-        if not cursor.fetchone():
-            cursor.execute("INSERT INTO groups VALUES(?)", (message.chat.id,))
-            db.commit()
+        cursor.execute("INSERT OR IGNORE INTO groups VALUES(?)", (message.chat.id,))
+        db.commit()
         bot.delete_message(message.chat.id, message.message_id)
     except:
         pass
 
 @bot.message_handler(content_types=['left_chat_member'])
-def delete_left(message):
+def left_clean(message):
     try:
         bot.delete_message(message.chat.id, message.message_id)
     except:
@@ -65,10 +63,12 @@ def start(message):
 
     bot.send_message(message.chat.id,"🎬 Kino kod yubor yoki link tashla")
 
-# ===== ADMIN PANEL =====
-@bot.message_handler(commands=['admin'])
+# ===== ADMIN PANEL (FIXED) =====
+@bot.message_handler(func=lambda m: m.text == "/admin")
 def admin(message):
+
     if message.from_user.id != ADMIN_ID:
+        bot.send_message(message.chat.id,"⛔ Siz admin emassiz")
         return
 
     markup = InlineKeyboardMarkup(row_width=2)
