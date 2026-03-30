@@ -24,11 +24,9 @@ cursor.execute("CREATE TABLE IF NOT EXISTS logs(user_id INTEGER,date TEXT)")
 db.commit()
 
 # ===== GLOBAL =====
-AUTO_TEXT = ""
-AUTO_VIDEO = None
-AUTO_BUTTON = None
 AUTO_STATUS = False
 AUTO_TIMES = []
+AUTO_TEXT = "Reklama"
 
 # ===== USER =====
 def add_user(user_id):
@@ -37,18 +35,14 @@ def add_user(user_id):
         cursor.execute("INSERT INTO users VALUES(?)", (user_id,))
         db.commit()
 
-# ===== GROUP SAVE =====
-@bot.message_handler(func=lambda m: m.chat.type in ["group","supergroup"])
-def save_group(message):
-    cursor.execute("SELECT chat_id FROM groups WHERE chat_id=?", (message.chat.id,))
-    if not cursor.fetchone():
-        cursor.execute("INSERT INTO groups VALUES(?)", (message.chat.id,))
-        db.commit()
-
-# ===== JOIN / LEFT CLEANER =====
+# ===== GROUP SAVE (FIXED) =====
 @bot.message_handler(content_types=['new_chat_members'])
-def delete_join(message):
+def save_group(message):
     try:
+        cursor.execute("SELECT chat_id FROM groups WHERE chat_id=?", (message.chat.id,))
+        if not cursor.fetchone():
+            cursor.execute("INSERT INTO groups VALUES(?)", (message.chat.id,))
+            db.commit()
         bot.delete_message(message.chat.id, message.message_id)
     except:
         pass
@@ -64,9 +58,11 @@ def delete_left(message):
 @bot.message_handler(commands=['start'])
 def start(message):
     add_user(message.from_user.id)
+
     today = str(datetime.date.today())
-    cursor.execute("INSERT INTO logs VALUES (?,?)", (message.from_user.id, today))
+    cursor.execute("INSERT INTO logs VALUES (?,?)",(message.from_user.id,today))
     db.commit()
+
     bot.send_message(message.chat.id,"🎬 Kino kod yubor yoki link tashla")
 
 # ===== ADMIN PANEL =====
@@ -101,7 +97,7 @@ def callback(call):
         bot.register_next_step_handler(msg,get_video)
 
     elif call.data == "delete":
-        msg = bot.send_message(call.message.chat.id,"Kod yubor")
+        msg = bot.send_message(call.message.chat.id,"Kod yoz")
         bot.register_next_step_handler(msg,delete_kino)
 
     elif call.data == "ads":
@@ -140,7 +136,7 @@ def callback(call):
 # ===== ADD TIME =====
 def set_time(message):
     AUTO_TIMES.append(message.text)
-    bot.send_message(message.chat.id,"✅ Qo‘shildi")
+    bot.send_message(message.chat.id,"✅ Time qo‘shildi")
 
 # ===== AUTO ADS =====
 def auto_ads():
@@ -153,7 +149,7 @@ def auto_ads():
 
             for u in users:
                 try:
-                    bot.send_message(u[0], AUTO_TEXT or "Reklama")
+                    bot.send_message(u[0], AUTO_TEXT)
                 except:
                     pass
 
@@ -232,7 +228,7 @@ def delete_kino(message):
 def download_video(message):
 
     url = message.text
-    bot.send_message(message.chat.id, "📥 Yuklanmoqda...")
+    bot.send_message(message.chat.id,"📥 Yuklanmoqda...")
 
     try:
         ydl_opts = {
@@ -252,7 +248,7 @@ def download_video(message):
         os.remove(filename)
 
     except:
-        bot.send_message(message.chat.id, "❌ Xatolik")
+        bot.send_message(message.chat.id,"❌ Xatolik")
 
 # ===== KINO =====
 @bot.message_handler(func=lambda m: m.text and not m.text.startswith("/") and "http" not in m.text)
